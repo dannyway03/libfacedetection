@@ -72,34 +72,21 @@ visualize(cv::Mat input, cv::Mat faces, bool print_flag = false,
 int
 main(int argc, char **argv)
 {
-  cv::CommandLineParser parser(
-      argc, argv,
-      "{help  h           |            | Print this message.}"
-      "{input i           | "
-      "/home/nicola/Software/Ultra-Light-Fast-Generic-Face-Detector-1MB/imgs/"
-      "17.jpg           | Path to the input image. Omit for detecting on "
-      "default camera.}"
-      "{backend_id        | 0          | Backend to run on. 0: default, 1: "
-      "Halide, 2: Intel's Inference Engine, 3: OpenCV, 4: VKCOM, 5: CUDA}"
-      "{target_id         | 0          | Target to run on. 0: CPU, 1: OpenCL, "
-      "2: OpenCL FP16, 3: Myriad, 4: Vulkan, 5: FPGA, 6: CUDA, 7: CUDA FP16, "
-      "8: HDDL}"
-      "{model m           | "
-      "/home/nicola/Software/libfacedetection/opencv_dnn/models/"
-      "face_detection_yunet_2023mar.onnx | Path to the model. Download "
-      "yunet.onnx in "
-      "https://github.com/ShiqiYu/libfacedetection.train/tree/master/tasks/"
-      "task1/onnx.}"
-      "{score_threshold   | 0.7        | Filter out faces of score < "
-      "score_threshold.}"
-      "{nms_threshold     | 0.3        | Suppress bounding boxes of iou >= "
-      "nms_threshold.}"
-      "{top_k             | 5000       | Keep top_k bounding boxes before "
-      "NMS.}"
-      "{save  s           | false      | Set true to save results. This flag "
-      "is invalid when using camera.}"
-      "{vis   v           | true       | Set true to open a window for result "
-      "visualization. This flag is invalid when using camera.}");
+  // clang-format off
+  cv::CommandLineParser parser(argc, argv,
+          "{help  h           |            | Print this message.}"
+          "{input_image       |            | Path to the input image.}"
+          "{input_video       |            | Path to the input video.}"
+          "{scale sc          | 1.0        | Scale factor used to resize input video frames}"
+          "{backend_id        | 0          | Backend to run on. 0: default, 1: Halide, 2: Intel's Inference Engine, 3: OpenCV, 4: VKCOM, 5: CUDA}"
+          "{target_id         | 0          | Target to run on. 0: CPU, 1: OpenCL, 2: OpenCL FP16, 3: Myriad, 4: Vulkan, 5: FPGA, 6: CUDA, 7: CUDA FP16, 8: HDDL}"
+          "{model m           | yunet.onnx | Path to the model. Download yunet.onnx in https://github.com/ShiqiYu/libfacedetection.train/tree/master/tasks/task1/onnx.}"
+          "{score_threshold   | 0.7        | Filter out faces of score < score_threshold.}"
+          "{nms_threshold     | 0.3        | Suppress bounding boxes of iou >= nms_threshold.}"
+          "{top_k             | 5000       | Keep top_k bounding boxes before NMS.}"
+          );
+  // clang-format on
+
   if(parser.has("help"))
     {
       parser.printMessage();
@@ -107,6 +94,7 @@ main(int argc, char **argv)
     }
 
   cv::String modelPath = parser.get<cv::String>("model");
+  float scale = parser.get<float>("scale");
   int backendId = parser.get<int>("backend_id");
   int targetId = parser.get<int>("target_id");
 
@@ -114,50 +102,52 @@ main(int argc, char **argv)
   float nmsThreshold = parser.get<float>("nms_threshold");
   int topK = parser.get<int>("top_k");
 
-  bool save = parser.get<bool>("save");
-  bool vis = parser.get<bool>("vis");
-
   // Initialize FaceDetectorYN
   cv::Ptr<cv::FaceDetectorYN> detector = cv::FaceDetectorYN::create(
-      modelPath, "", cv::Size(640, 640), scoreThreshold, nmsThreshold, topK,
+      modelPath, "", cv::Size(320, 320), scoreThreshold, nmsThreshold, topK,
       backendId, targetId);
 
   // If input is an image
-  if(parser.has("input"))
+  if(parser.has("input_image"))
     {
-      cv::String input = parser.get<cv::String>("input");
+      cv::String input = parser.get<cv::String>("input_image");
       cv::Mat image = cv::imread(input);
-
-      cv::TickMeter cvtm;
-      cvtm.start();
-
-      detector->setInputSize(image.size());
-      cv::Mat faces;
-      detector->detect(image, faces);
-
-      cvtm.stop();
-      printf("time = %gms\n", cvtm.getTimeMilli());
-
-      cv::Mat vis_image = visualize(image, faces, false);
-      if(save)
+      if(image.empty())
         {
-          cout << "result.jpg saved.\n";
-          cv::imwrite("result.jpg", vis_image);
+          std::cerr << "Cannot read image: " << input << std::endl;
+          return 2;
         }
-      if(vis)
+
+      int imageWidth = int(image.cols * scale);
+      int imageHeight = int(image.rows * scale);
+      resize(image, image, cv::Size(imageWidth, imageHeight));
+      detector->setInputSize(cv::Size(imageWidth, imageHeight));
+
+      while(cv::waitKey(1) < 0) // Press any key to exit
         {
-          cv::namedWindow(input, cv::WINDOW_AUTOSIZE);
-          cv::imshow(input, vis_image);
-          cv::waitKey(0);
+          cv::Mat faces;
+
+          cv::TickMeter tm;
+          tm.start();
+          detector->detect(image, faces);
+          tm.stop();
+
+          printf("time = %gms\n", tm.getTimeMilli());
+
+          cv::Mat vis_image = visualize(image, faces, false, tm.getFPS());
+
+          imshow("libfacedetection demo", vis_image);
+
+          tm.reset();
         }
     }
-  else
+  else if(parser.has("input_video"))
     {
-      int deviceId = 0;
       cv::VideoCapture cap;
-      cap.open(deviceId, cv::CAP_ANY);
-      int frameWidth = int(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-      int frameHeight = int(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+      cv::String input = parser.get<cv::String>("input_video");
+      cap.open(input, cv::CAP_ANY);
+      int frameWidth = int(cap.get(cv::CAP_PROP_FRAME_WIDTH) * scale);
+      int frameHeight = int(cap.get(cv::CAP_PROP_FRAME_HEIGHT) * scale);
       detector->setInputSize(cv::Size(frameWidth, frameHeight));
 
       cv::Mat frame;
@@ -169,6 +159,7 @@ main(int argc, char **argv)
               cerr << "No frames grabbed!\n";
               break;
             }
+          resize(frame, frame, cv::Size(frameWidth, frameHeight));
 
           cv::Mat faces;
           tm.start();
